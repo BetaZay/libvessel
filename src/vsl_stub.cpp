@@ -187,8 +187,10 @@ int main(int argc, char *argv[]) {
       fs::path desktop_apps_dir = local_share / "applications";
       fs::path icons_dir = local_share / "icons";
       fs::path central_apps_dir = fs::path(home_dir) / "Vessel Apps";
-      if (!fs::exists(central_apps_dir))
-        fs::create_directories(central_apps_dir);
+      
+      if (!fs::exists(desktop_apps_dir)) fs::create_directories(desktop_apps_dir);
+      if (!fs::exists(icons_dir)) fs::create_directories(icons_dir);
+      if (!fs::exists(central_apps_dir)) fs::create_directories(central_apps_dir);
 
       // Harvest the Icon
       bool has_icon = false;
