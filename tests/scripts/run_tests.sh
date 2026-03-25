@@ -4,7 +4,7 @@ set -e
 echo "Vessel Native Test Suite Starting..."
 echo "=========================================="
 
-VESSEL_ROOT="/workspace/vessel"
+VESSEL_ROOT="/workspace"
 
 # 1. Build the Vessel SDK
 echo "--> Compiling the Vessel SDK Platform"

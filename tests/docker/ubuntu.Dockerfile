@@ -8,4 +8,4 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /workspace
 COPY . /workspace
 
-CMD ["bash", "/workspace/vessel/tests/scripts/run_tests.sh"]
+CMD ["bash", "/workspace/tests/scripts/run_tests.sh"]

@@ -71,7 +71,11 @@ int help() {
                "application automatically. Use --keep to preserve the "
                "intermediate structure.\n";
   std::cout << "  update    Updates and cleans up the global registry\n";
-  std::cout << "  remove    Removes an application from the global registry\n";
+  std::cout << "  remove <name> [-y] Removes an application from the global "
+               "registry\n";
+  std::cout << "  list      List all installed applications\n";
+  std::cout << "  import <file.AppImage>  Converts an AppImage into a Vessel "
+               "bundle\n";
   std::cout << "  help      Show help menu\n";
   return 0;
 }
@@ -123,8 +127,12 @@ int pack(int argc, char *argv[]) {
   std::string bin_file = "";
   std::string icon_path = "";
   std::string build_dir = "build";
-  std::string build_cmd = "cmake .. && make";
+  std::string build_cmd = ""; // Only build if CMakeLists.txt is found
   std::string dist_dir = ".";
+
+  if (fs::exists("CMakeLists.txt")) {
+    build_cmd = "cmake .. && make";
+  }
 
   std::ifstream manifest_file("vessel.json");
   if (manifest_file.is_open()) {
@@ -407,21 +415,33 @@ int update(int argc, char *argv[]) {
   std::string line;
   struct AppEntry {
     std::string name;
+    std::string desc;
     std::string path;
   };
   std::vector<AppEntry> entries;
   std::vector<std::string> known_paths;
 
   while (std::getline(registry_in, line)) {
-    size_t pipe_pos = line.find("|");
-    if (pipe_pos != std::string::npos) {
-      std::string app_name = line.substr(0, pipe_pos);
-      std::string app_path = line.substr(pipe_pos + 1);
+    size_t p1 = line.find("|");
+    if (p1 != std::string::npos) {
+      size_t p2 = line.find("|", p1 + 1);
+      std::string app_name, app_desc, app_path;
+      if (p2 != std::string::npos) {
+        // New format: name|desc|path
+        app_name = line.substr(0, p1);
+        app_desc = line.substr(p1 + 1, p2 - p1 - 1);
+        app_path = line.substr(p2 + 1);
+      } else {
+        // Old format: name|path
+        app_name = line.substr(0, p1);
+        app_desc = "No description provided.";
+        app_path = line.substr(p1 + 1);
+      }
 
       if (std::find(known_paths.begin(), known_paths.end(), app_path) ==
           known_paths.end()) {
         if (fs::exists(app_path)) {
-          entries.push_back({app_name, app_path});
+          entries.push_back({app_name, app_desc, app_path});
           known_paths.push_back(app_path);
         }
       }
@@ -460,7 +480,7 @@ int update(int argc, char *argv[]) {
   // Rewrite registry with existing apps only (after potential updates)
   std::ofstream registry_out(registry_path, std::ios::trunc);
   for (const auto &entry : entries) {
-    registry_out << entry.name << "|" << entry.path << "\n";
+    registry_out << entry.name << "|" << entry.desc << "|" << entry.path << "\n";
   }
   registry_out.close();
 
@@ -470,18 +490,44 @@ int update(int argc, char *argv[]) {
   return 0;
 }
 
+int remove(int argc, char *argv[]);
+int list();
+int import_appimage(int argc, char *argv[]);
+int help(int argc, char *argv[]);
 int remove(int argc, char *argv[]) {
-  if (argc < 1) {
+  std::string target_name = "";
+  bool force = false;
+
+  for (int i = 0; i < argc; i++) {
+    std::string arg = argv[i];
+    if (arg == "-y") {
+      force = true;
+    } else if (target_name.empty()) {
+      target_name = arg;
+    }
+  }
+
+  if (target_name.empty()) {
     std::cerr << "Error: 'remove' requires an application name.\n";
-    std::cerr << "Usage: vsl remove <app_name>\n";
+    std::cerr << "Usage: vsl remove <app_name> [-y]\n";
     return 1;
   }
 
-  std::string target_name = argv[0];
   const char *home_dir = getenv("HOME");
   if (!home_dir) {
     std::cerr << "Cannot locate home directory.\n";
     return 1;
+  }
+
+  if (!force) {
+    std::cout << "Are you sure you want to remove '" << target_name
+              << "'? [y/N]: ";
+    std::string response;
+    std::getline(std::cin, response);
+    if (response != "y" && response != "Y") {
+      std::cout << "Operation canceled.\n";
+      return 0;
+    }
   }
 
   fs::path registry_path = fs::path(home_dir) / ".vessel_registry";
@@ -520,19 +566,19 @@ int remove(int argc, char *argv[]) {
     fs::path vessel_bin_dir = local_share / "vessel" / "bin";
     fs::path desktop_apps_dir = local_share / "applications";
     fs::path icons_dir = local_share / "icons";
-    fs::path central_apps_dir = fs::path(home_dir) / "Applications";
-
+    fs::path central_apps_dir = fs::path(home_dir) / "Vessel Apps";
     fs::path final_vsl_location = vessel_bin_dir / (target_name + ".vsl");
     fs::path start_menu_path = desktop_apps_dir / (target_name + ".desktop");
-    fs::path physical_app_shortcut =
-        central_apps_dir / (target_name + ".desktop");
 
-    if (fs::exists(final_vsl_location))
-      fs::remove(final_vsl_location);
-    if (fs::exists(start_menu_path))
-      fs::remove(start_menu_path);
-    if (fs::exists(physical_app_shortcut))
-      fs::remove(physical_app_shortcut);
+    if (fs::exists(final_vsl_location)) fs::remove(final_vsl_location);
+    if (fs::exists(start_menu_path)) fs::remove(start_menu_path);
+
+    if (fs::exists(central_apps_dir)) {
+      fs::path physical_app_shortcut =
+          central_apps_dir / (target_name + ".desktop");
+      if (fs::exists(physical_app_shortcut))
+        fs::remove(physical_app_shortcut);
+    }
 
     // Clean up icons (check for both .png and .svg)
     fs::path icon_png = icons_dir / (target_name + ".png");
@@ -549,6 +595,179 @@ int remove(int argc, char *argv[]) {
               << "' not found in registry.\n";
     return 1;
   }
+
+  return 0;
+}
+
+int list() {
+  const char *home_dir = getenv("HOME");
+  if (!home_dir) return 1;
+
+  fs::path registry_path = fs::path(home_dir) / ".vessel_registry";
+  if (!fs::exists(registry_path)) {
+    std::cout << "No registered vessels found.\n";
+    return 0;
+  }
+
+  std::cout << "\nManaged Vessel Applications:\n";
+  std::cout << "--------------------------------------------------\n";
+
+  std::ifstream registry_in(registry_path);
+  std::string line;
+  int count = 0;
+  while (std::getline(registry_in, line)) {
+    size_t p1 = line.find("|");
+    if (p1 != std::string::npos) {
+      size_t p2 = line.find("|", p1 + 1);
+      std::string name, desc, path;
+      if (p2 != std::string::npos) {
+        name = line.substr(0, p1);
+        desc = line.substr(p1 + 1, p2 - p1 - 1);
+        path = line.substr(p2 + 1);
+      } else {
+        name = line.substr(0, p1);
+        desc = "No description provided.";
+        path = line.substr(p1 + 1);
+      }
+      std::cout << "  " << name << "\n";
+      std::cout << "  - Status: " << (fs::exists(path) ? "Ready" : "Missing") << "\n";
+      std::cout << "  - Desc:   " << desc << "\n\n";
+      count++;
+    }
+  }
+  if (count == 0) {
+    std::cout << "Registry empty.\n";
+  }
+  std::cout << "--------------------------------------------------\n";
+  return 0;
+}
+
+int import_appimage(int argc, char *argv[]) {
+  if (argc < 1) {
+    std::cerr << "Usage: vsl import <path_to_appimage>\n";
+    return 1;
+  }
+
+  fs::path appimage_path = argv[0];
+  if (!fs::exists(appimage_path)) {
+    std::cerr << "Error: File '" << appimage_path.string() << "' not found.\n";
+    return 1;
+  }
+
+  std::cout << "Vessel Importer: Analyzing AppImage '" << appimage_path.filename().string() << "'...\n";
+
+  // 1. Extract
+  fs::path full_path = fs::absolute(appimage_path);
+  std::string extract_cmd = "\"" + full_path.string() + "\" --appimage-extract > /dev/null 2>&1";
+  if (system(extract_cmd.c_str()) != 0) {
+    std::cerr << "Error: Failed to extract AppImage. Is it a valid AppImage?\n";
+    return 1;
+  }
+
+  fs::path root = "squashfs-root";
+  if (!fs::exists(root)) {
+    std::cerr << "Error: squashfs-root not found after extraction.\n";
+    return 1;
+  }
+
+  std::string app_name = appimage_path.stem().string();
+  std::string app_desc = "Imported AppImage bundle.";
+  std::string icon_filename = "";
+
+  // Try to find a desktop file for name, description, and icon name
+  for (const auto& entry : fs::directory_iterator(root)) {
+    if (entry.path().extension() == ".desktop") {
+        std::ifstream desktop(entry.path());
+        std::string line;
+        while (std::getline(desktop, line)) {
+            if (line.find("Name=") == 0) {
+                app_name = line.substr(5);
+            }
+            if (line.find("Comment=") == 0) {
+                app_desc = line.substr(8);
+            }
+            if (line.find("Icon=") == 0) {
+                icon_filename = line.substr(5);
+            }
+        }
+        break;
+    }
+  }
+
+  // Resolve Icon Path (Prioritize .DirIcon -> Name from Desktop -> Root match)
+  fs::path final_icon_source = "";
+  if (fs::exists(root / ".DirIcon")) {
+      final_icon_source = root / ".DirIcon";
+  } else if (!icon_filename.empty()) {
+      // Check for common extensions if not provided
+      if (fs::exists(root / (icon_filename + ".png"))) final_icon_source = root / (icon_filename + ".png");
+      else if (fs::exists(root / (icon_filename + ".svg"))) final_icon_source = root / (icon_filename + ".svg");
+  }
+
+  std::cout << "Detected App Name: " << app_name << "\n";
+  std::cout << "Detected Description: " << app_desc << "\n";
+  if (!final_icon_source.empty()) {
+    std::cout << "Detected Icon: " << final_icon_source.filename().string() << "\n";
+  }
+
+  // 3. Repackaging as Vessel (Manual construction to preserve AppImage layout)
+  std::string bundle_name = app_name + ".vsl";
+  fs::path vsl_root = bundle_name + "_struct";
+  fs::create_directories(vsl_root);
+
+  // Copy everything from squashfs-root to vsl_root
+  std::cout << "Importing filesystem structure...\n";
+  for (const auto& entry : fs::directory_iterator(root)) {
+      std::string cmd = "cp -r \"";
+      cmd += entry.path().string();
+      cmd += "\" \"";
+      cmd += vsl_root.string();
+      cmd += "/\"";
+      system(cmd.c_str());
+  }
+
+  // Create a minimal manifest inside
+  std::ofstream manifest(vsl_root / "vessel.json");
+  manifest << "{\n  \"name\": \"" << app_name << "\",\n";
+  manifest << "  \"description\": \"" << app_desc << "\",\n";
+  if (!final_icon_source.empty()) {
+      // Copy icon specifically to res/ for consistency
+      fs::create_directories(vsl_root / "res");
+      std::string ext = final_icon_source.extension().string();
+      if (ext.empty()) ext = ".png"; // .DirIcon often has no ext
+      fs::copy_file(final_icon_source, vsl_root / ("res/icon" + ext), fs::copy_options::overwrite_existing);
+      manifest << "  \"icon\": \"res/icon" << ext << "\",\n";
+  }
+  manifest << "  \"bin_file\": \"AppRun\",\n  \"version\": \"AppImage-Import\"\n}\n";
+  manifest.close();
+
+  // 4. Finalize Bundle
+  std::cout << "Finalizing Vessel bundle...\n";
+  
+  // Compression logic (mirrored from pack)
+  std::string archive_path = bundle_name + "_payload.tar.gz";
+  std::string tar_cmd = "tar -czf \"" + archive_path + "\" -C \"" + vsl_root.string() + "\" .";
+  system(tar_cmd.c_str());
+
+  std::string pack_exe_path = "/proc/self/exe";
+  fs::path stub_parent = fs::read_symlink(pack_exe_path).parent_path();
+  std::string stub_path = (stub_parent / "vsl-stub").string();
+  if (!fs::exists(stub_path)) {
+    stub_path = fs::path(VESSEL_DATA_DIR) / "vsl-stub";
+  }
+
+  std::string concat_cmd = "cat \"" + stub_path + "\" > \"" + bundle_name + "\"";
+  system(concat_cmd.c_str());
+  system(("echo -n '[VSL_ARCHIVE]' >> \"" + bundle_name + "\"").c_str());
+  system(("cat \"" + archive_path + "\" >> \"" + bundle_name + "\"").c_str());
+  system(("chmod +x \"" + bundle_name + "\"").c_str());
+
+  // Cleanup
+  fs::remove_all(root);
+  fs::remove_all(vsl_root);
+  fs::remove(archive_path);
+
+  std::cout << "\nImport Successful! '" << bundle_name << "' created.\n";
 
   return 0;
 }

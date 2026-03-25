@@ -7,4 +7,4 @@ RUN dnf update -y && dnf install -y \
 WORKDIR /workspace
 COPY . /workspace
 
-CMD ["bash", "/workspace/vessel/tests/scripts/run_tests.sh"]
+CMD ["bash", "/workspace/tests/scripts/run_tests.sh"]

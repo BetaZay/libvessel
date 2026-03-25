@@ -41,10 +41,12 @@ vsl pack
 | Command | Description |
 | :--- | :--- |
 | `init` | Creates a `vessel.json` manifest in the current directory. |
-| `pack [--keep]` | Builds your project and packages it into a `.vsl` bundle. Use `--keep` to inspect the internal folder structure. |
-| `update` | Cleans up the registry and checks for updates. |
-| `remove` | Uninstalls an app and removes all OS integrations. |
-| `help` | Shows the help menu. |
+| `pack [--keep]` | Builds and packages your project into a `.vsl` bundle. |
+| `import <file.AppImage>` | Converts a third-party AppImage into a managed Vessel bundle. |
+| `list` | Lists all installed applications with their status and descriptions. |
+| `update` | Syncs installed apps with their source bundles and cleans the registry. |
+| `remove <name> [-y]` | Uninstalls an app and cleans up Vessel Apps shortcuts. |
+| `help` | Shows the help menu with detailed usage. |
 
 ---
 

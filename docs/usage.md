@@ -21,19 +21,26 @@ Share the `.vsl` file with anyone on a modern Linux distro. No installation of V
 
 ## CLI Commands
 
-### `update`
-Cleans up the registry and checks for updates. This command is useful if you want to ensure all your registered apps are still accessible.
+### `list`
+Displays all registered applications, their status (Ready/Missing), and their descriptions.
 
-### `remove <name>`
-Completely uninstalls an app that was registered by Vessel. This deletes:
+### `update`
+Syncs registered apps with their source bundles. If you rebuild a `.vsl` file in your project folder, running `vsl update` will push the new version to your system-wide installation.
+
+### `remove <name> [-y]`
+Uninstalls an app and cleans up metadata. By default, it asks for confirmation. Use `-y` to skip.
+This command deletes:
 - The registry entry.
 - The installed `.vsl` bundle in `~/.local/share/vessel/bin`.
-- Desktop entries in `~/.local/share/applications` and `~/Applications`.
+- Desktop entries in `~/.local/share/applications` and `~/Vessel Apps`.
 - Associated icons in `~/.local/share/icons`.
-- `bin/`: Contains the executable specified by `bin_file`.
-- `lib/`: All necessary library dependencies.
-- `res/`: Bundled resources and the application icon.
-- `vessel.json`: The manifest specifying the application metadata and entry point.
+
+---
+
+### `import <path_to.AppImage>`
+Converts an existing AppImage into a managed Vessel bundle. 
+- **What it does**: Extracts the AppImage, intelligently analyzes its metadata (`.desktop`, `Comment`, `Icon`), and re-packages everything as a Vessel bundle.
+- **Benefit**: Turns third-party AppImages into first-class citizens in your `vsl registry`, giving them a consistent icon, description, and centralized management.
 
 ## Manifest Configuration Reference
 
