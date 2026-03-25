@@ -54,6 +54,14 @@ int main(int argc, char *argv[]) {
   std::string actual_vsl_path = fs::read_symlink("/proc/self/exe").string();
   std::string app_name = fs::path(actual_vsl_path).stem().string();
 
+  bool install_only = false;
+  for (int i = 1; i < argc; i++) {
+    if (std::string(argv[i]) == "--install-only") {
+      install_only = true;
+      break;
+    }
+  }
+
   // 0. The Inspection Flag: Dump the internal filesystem for the user
   // dynamically
   if (argc >= 2 && std::string(argv[1]) == "--vsl-extract") {
@@ -240,9 +248,20 @@ int main(int argc, char *argv[]) {
                           fs::perms::others_exec,
                       fs::perm_options::add);
 
+      if (install_only) {
+        std::cout << "Vessel installation for '" << app_name << "' complete. Exiting.\n";
+        return 0;
+      }
+      
       std::cout << "Installation complete! Executing primary bundle...\n";
       std::string launch_cmd = final_vsl_location.string();
       return system(launch_cmd.c_str());
+    } else {
+      // If we are already in the final home but someone ran with --install-only
+      if (install_only) {
+        std::cout << "Vessel app '" << app_name << "' is already natively installed. Exiting.\n";
+        return 0;
+      }
     }
 
     // Self-Registration (Unique)
@@ -304,6 +323,11 @@ int main(int argc, char *argv[]) {
       getenv("LD_LIBRARY_PATH") ? getenv("LD_LIBRARY_PATH") : "";
   std::string new_ld = lib_path + ":" + current_ld;
   setenv("LD_LIBRARY_PATH", new_ld.c_str(), 1);
+
+  if (install_only) {
+    std::cout << "Vessel installation/cache ready for '" << app_name << "'. Exiting.\n";
+    return 0;
+  }
 
   int ret = system(exec_str.c_str());
   return ret;

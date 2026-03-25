@@ -42,6 +42,33 @@ Converts an existing AppImage into a managed Vessel bundle.
 - **What it does**: Extracts the AppImage, intelligently analyzes its metadata (`.desktop`, `Comment`, `Icon`), and re-packages everything as a Vessel bundle.
 - **Benefit**: Turns third-party AppImages into first-class citizens in your `vsl registry`, giving them a consistent icon, description, and centralized management.
 
+---
+
+## Headless & Store Integration
+
+If you are building an App Store, Launcher, or automated setup script, you can use the following flags when executing any `.vsl` bundle:
+
+### `--install-only`
+Silently performs the full installation cycle without launching the application.
+- Extracts files to `/tmp/vessel_cache_<name>`.
+- Copies the bundle to `~/.local/share/vessel/bin/`.
+- Registers the application in the global registry.
+- Creates desktop shortcuts in `~/Vessel Apps`.
+- **Exits immediately** after setup is complete.
+
+**Usage:**
+```bash
+./my_app.vsl --install-only
+```
+
+### `--vsl-extract`
+Dumps the internal filesystem structure of the bundle into a local directory for inspection. This is useful for debugging library dependencies or verifying assets.
+
+**Usage:**
+```bash
+./my_app.vsl --vsl-extract
+```
+
 ## Manifest Configuration Reference
 
 The `vessel.json` file allows for extensive customization:
