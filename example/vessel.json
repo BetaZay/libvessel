@@ -1,0 +1,10 @@
+{
+  "name": "Pong",
+  "bin_file": "pong",
+  "version": "1.0.0",
+  "description": "A native C++ application bundled with Vessel",
+  "icon": "assets/icon.png",
+  "build_dir": "build",
+  "build_cmd": "cmake .. && make",
+  "dist_dir": "dist"
+}

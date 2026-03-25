@@ -1,0 +1,72 @@
+name: Vessel CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # 1. Native Build Check (Ubuntu Latest)
+  native-build:
+    name: Native Build (C++17)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Build Dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ libncurses-dev libsdl2-dev git
+
+      - name: Configure and Build
+        run: |
+          mkdir build && cd build
+          cmake ..
+          make -j$(nproc)
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsl-binary
+          path: build/vsl
+
+  # 2. Multi-OS Integration Tests (Docker)
+  integration-tests:
+    name: Multi-OS Integration Tests
+    needs: native-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Run Vessel Test Orchestrator
+        run: |
+          chmod +x tests/test.sh
+          ./tests/test.sh
+
+  # 3. Publish (Draft Release on Tags)
+  release:
+    name: Draft Release
+    needs: [native-build, integration-tests]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsl-binary
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: vsl
+          draft: true
+          prerelease: false
+          body: |
+            ### Vessel v${{ github.ref_name }} Release
+            - Single-file binary distribution
+            - Full OS integration support
+            - Optimized for large CMake projects
