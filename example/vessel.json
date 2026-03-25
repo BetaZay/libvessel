@@ -1,5 +1,5 @@
 {
-  "name": "Pong",
+  "name": "pong",
   "bin_file": "pong",
   "version": "1.0.0",
   "description": "A native C++ application bundled with Vessel",
