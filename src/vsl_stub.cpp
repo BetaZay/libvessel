@@ -4,6 +4,10 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <signal.h>
 
 namespace fs = std::filesystem;
 
@@ -31,6 +35,159 @@ size_t find_marker(std::ifstream &file, const std::string &marker) {
   return 0;
 }
 
+class StubUX {
+public:
+    enum class Mode { ZENITY, KDIALOG, TERMINAL };
+    
+    StubUX(const std::string& app_name) : app_name(app_name) {
+        if (getenv("DISPLAY") || getenv("WAYLAND_DISPLAY")) {
+            if (system("which zenity > /dev/null 2>&1") == 0) {
+                mode = Mode::ZENITY;
+            } else if (system("which kdialog > /dev/null 2>&1") == 0) {
+                mode = Mode::KDIALOG;
+            } else {
+                mode = Mode::TERMINAL;
+            }
+        } else {
+            mode = Mode::TERMINAL;
+        }
+    }
+
+    ~StubUX() {
+        hide_status();
+    }
+
+    void show_status(const std::string& message) {
+        std::cout << "Vessel: " << message << std::endl;
+        
+        if (mode == Mode::ZENITY) {
+            if (zenity_pid == -1) {
+                fifo_path = "/tmp/vsl_fifo_" + std::to_string(getpid());
+                mkfifo(fifo_path.c_str(), 0600);
+
+                // Start Zenity in the background reading from the FIFO
+                std::string cmd = "zenity --progress --pulsate --title=\"Vessel: " + app_name + 
+                                  "\" --text=\"Starting setup...\" --auto-close --no-cancel < " + fifo_path + " & echo $!";
+                
+                FILE* p = popen(cmd.c_str(), "r");
+                if (p) {
+                    char buf[32];
+                    if (fgets(buf, sizeof(buf), p)) {
+                        zenity_pid = std::stoi(buf);
+                    }
+                    pclose(p);
+                }
+
+                // Open the FIFO for writing
+                fifo_fd = open(fifo_path.c_str(), O_WRONLY | O_NONBLOCK);
+            }
+
+            if (fifo_fd != -1) {
+                std::string msg = "# " + message + "\n";
+                write(fifo_fd, msg.c_str(), msg.length());
+            }
+        } else if (mode == Mode::KDIALOG) {
+            std::string cmd = "kdialog --title \"Vessel: " + app_name + "\" --passivepopup \"" + message + "\" 5 &";
+            system(cmd.c_str());
+        }
+    }
+
+    void hide_status() {
+        if (zenity_pid != -1) {
+            std::cout << "Vessel Debug: Triggering hide_status for PID " << zenity_pid << std::endl;
+            if (fifo_fd != -1) {
+                write(fifo_fd, "100\n", 4);
+                close(fifo_fd);
+                fifo_fd = -1;
+            }
+            
+            // Kill the shell wrapper that spawned it using native POSIX kill
+            kill(zenity_pid, SIGKILL);
+            
+            // Explicitly search and terminate the Zenity process directly if pkill is available
+            if (system("which pkill > /dev/null 2>&1") == 0) {
+                std::string pkill_cmd = "pkill -f 'zenity.*Vessel: " + app_name + "' 2>/dev/null";
+                system(pkill_cmd.c_str());
+            }
+            
+            if (!fifo_path.empty()) {
+                unlink(fifo_path.c_str());
+                fifo_path.clear();
+            }
+            zenity_pid = -1;
+        }
+    }
+
+    void show_error(const std::string& title, const std::string& message) {
+        std::cerr << "Vessel Error: " << title << " - " << message << std::endl;
+        hide_status();
+
+        if (mode == Mode::ZENITY) {
+            std::string cmd = "zenity --error --title=\"" + title + "\" --text=\"" + message + "\"";
+            system(cmd.c_str());
+        } else if (mode == Mode::KDIALOG) {
+            std::string cmd = "kdialog --title \"" + title + "\" --error \"" + message + "\"";
+            system(cmd.c_str());
+        }
+    }
+
+    bool has_internet() {
+        return system("timeout 2 bash -c '</dev/tcp/8.8.8.8/53' > /dev/null 2>&1") == 0;
+    }
+
+private:
+    Mode mode;
+    std::string app_name;
+    int zenity_pid = -1;
+    int fifo_fd = -1;
+    std::string fifo_path;
+};
+
+bool ensure_runtime(const std::string& type, const std::string& version, StubUX& ux) {
+  if (type != "java") return true;
+
+  const char *home = getenv("HOME");
+  if (!home) return false;
+
+  fs::path runtime_root = fs::path(home) / ".vessel" / "runtimes" / "java" / version;
+  if (fs::exists(runtime_root / "bin" / "java")) {
+      setenv("JAVA_HOME", runtime_root.string().c_str(), 1);
+      return true;
+  }
+
+  ux.show_status("Required " + type + " runtime (" + version + ") not found locally.");
+  
+  if (!ux.has_internet()) {
+      ux.show_error("Offline", "Vessel needs an internet connection to download the required " + type + " runtime for the first time.");
+      return false;
+  }
+
+  ux.show_status("Fetching shared " + type + " runtime...");
+
+  fs::create_directories(runtime_root);
+  std::string download_url = "https://api.adoptium.net/v3/binary/latest/" + version + "/ga/linux/x64/jre/hotspot/normal/eclipse?project=jdk";
+  std::string tarball = "/tmp/vessel_" + type + "_" + version + ".tar.gz";
+
+  std::string curl_cmd = "curl -L -o " + tarball + " \"" + download_url + "\"";
+  if (system(curl_cmd.c_str()) != 0) {
+      ux.show_error("Download Failed", "Failed to fetch the runtime. Please check your network.");
+      return false;
+  }
+
+  ux.show_status("Unpacking runtime...");
+  std::string extract_cmd = "tar -xzf " + tarball + " -C " + runtime_root.string() + " --strip-components=1";
+  if (system(extract_cmd.c_str()) != 0) {
+      ux.show_error("Extraction Failed", "Failed to unpack the downloaded bundle.");
+      fs::remove(tarball);
+      return false;
+  }
+
+  fs::remove(tarball);
+  setenv("JAVA_HOME", runtime_root.string().c_str(), 1);
+  ux.show_status("Runtime ready.");
+  return true;
+}
+
 int main(int argc, char *argv[]) {
   std::string self_path = "/proc/self/exe";
   std::ifstream self_file(self_path, std::ios::binary);
@@ -53,6 +210,8 @@ int main(int argc, char *argv[]) {
 
   std::string actual_vsl_path = fs::read_symlink("/proc/self/exe").string();
   std::string app_name = fs::path(actual_vsl_path).stem().string();
+
+  StubUX ux(app_name);
 
   bool install_only = false;
   for (int i = 1; i < argc; i++) {
@@ -168,6 +327,30 @@ int main(int argc, char *argv[]) {
     std::string icon_val = get_val("icon");
     if (!icon_val.empty())
       icon_filename = fs::path(icon_val).filename().string();
+
+    // Runtime requirement check
+    size_t runtime_pos = content.find("\"runtime\"");
+    if (runtime_pos != std::string::npos) {
+        auto get_nested = [&](const std::string& outer_key, const std::string& inner_key) {
+            size_t outer = content.find("\"" + outer_key + "\"", runtime_pos);
+            if (outer == std::string::npos) return std::string("");
+            size_t inner = content.find("\"" + inner_key + "\"", outer);
+            if (inner == std::string::npos) return std::string("");
+            size_t s = content.find("\"", inner + inner_key.length() + 2);
+            size_t e = content.find("\"", s + 1);
+            if (s != std::string::npos && e != std::string::npos) {
+                return content.substr(s + 1, e - s - 1);
+            }
+            return std::string("");
+        };
+        std::string rt_type = get_nested("runtime", "type");
+        std::string rt_ver = get_nested("runtime", "version");
+        if (!rt_type.empty() && !rt_ver.empty()) {
+            if (!ensure_runtime(rt_type, rt_ver, ux)) {
+                return 1;
+            }
+        }
+    }
   }
 
   // 5. Autonomous Self-Installation on First Boot
@@ -251,18 +434,19 @@ int main(int argc, char *argv[]) {
                       fs::perm_options::add);
 
       if (install_only) {
-        std::cout << "Vessel installation for '" << app_name << "' complete. Exiting.\n";
-        return 0;
+        std::cout << "Vessel installation for '" << app_name
+                  << "' complete. Finalizing registry state...\n";
+      } else {
+        std::cout << "Installation complete! Executing primary bundle...\n";
+        ux.hide_status(); // Close progress dialog before blocking on inner bundle
+        std::string launch_cmd = final_vsl_location.string();
+        return system(launch_cmd.c_str());
       }
-      
-      std::cout << "Installation complete! Executing primary bundle...\n";
-      std::string launch_cmd = final_vsl_location.string();
-      return system(launch_cmd.c_str());
     } else {
       // If we are already in the final home but someone ran with --install-only
       if (install_only) {
-        std::cout << "Vessel app '" << app_name << "' is already natively installed. Exiting.\n";
-        return 0;
+        std::cout << "Vessel app '" << app_name
+                  << "' is already natively installed. Verifying registry state...\n";
       }
     }
 
@@ -313,7 +497,10 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  fs::path exec_path = cache_dir / "bin" / bin_file_name;
+  fs::path exec_path = cache_dir / "bin" / "VesselRun";
+  if (!fs::exists(exec_path)) {
+    exec_path = cache_dir / "bin" / bin_file_name;
+  }
   if (!fs::exists(exec_path)) {
     exec_path = cache_dir / bin_file_name;
   }
@@ -327,10 +514,12 @@ int main(int argc, char *argv[]) {
   setenv("LD_LIBRARY_PATH", new_ld.c_str(), 1);
 
   if (install_only) {
+    ux.hide_status();
     std::cout << "Vessel installation/cache ready for '" << app_name << "'. Exiting.\n";
     return 0;
   }
 
+  ux.hide_status();
   int ret = system(exec_str.c_str());
   return ret;
 }

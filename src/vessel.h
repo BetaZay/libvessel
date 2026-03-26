@@ -9,5 +9,5 @@ namespace vessel {
     int import_appimage(int argc, char* argv[]);
     int list();
     int help();
-    int init();
+    int init(int argc, char* argv[]);
 }

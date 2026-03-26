@@ -1,6 +1,7 @@
 #include "vessel.h"
+#include "packers/CMakePacker.h"
+#include "packers/GradlePacker.h"
 #include <algorithm>
-#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -17,99 +18,56 @@ namespace fs = std::filesystem;
 
 namespace vessel {
 
-// Execute a command and get output
-std::string exec(const char *cmd) {
-  std::array<char, 128> buffer;
-  std::string result;
-  std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
-  if (!pipe) {
-    throw std::runtime_error("popen() failed!");
-  }
-  while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
-    result += buffer.data();
-  }
-  return result;
-}
-
-// Simple ldd parser to find dependencies
-std::vector<std::string> get_dependencies(const std::string &binary_path) {
-  std::vector<std::string> deps;
-  std::string command = "ldd " + binary_path;
-  std::string output = exec(command.c_str());
-
-  // Parse ldd output (Format: libsomething.so => /path/to/libsomething.so
-  // (0x...))
-  std::istringstream stream(output);
-  std::string line;
-  while (std::getline(stream, line)) {
-    size_t arrow_pos = line.find("=> ");
-    if (arrow_pos != std::string::npos) {
-      size_t start = arrow_pos + 3;
-      size_t end = line.find(" (", start);
-      if (start != std::string::npos && end != std::string::npos) {
-        std::string lib_path = line.substr(start, end - start);
-
-        // Exclude Base Layer plumbing (libc, libdl, libpthread, librt, libm)
-        if (lib_path.find("/libc.so") == std::string::npos &&
-            lib_path.find("/libdl.so") == std::string::npos &&
-            lib_path.find("/libpthread.so") == std::string::npos &&
-            lib_path.find("/libm.so") == std::string::npos) {
-          deps.push_back(lib_path);
-        }
-      }
-    }
-  }
-  return deps;
-}
-
 int help() {
   std::cout << "Vessel CLI - The Native Linux Application Bundler\n\n";
   std::cout << "Commands:\n";
-  std::cout << "  init      Creates a vessel.json file at the current dir and "
-               "prints a link to docs\n";
-  std::cout << "  pack [--keep]  Works with cmake to build and package your "
-               "application automatically. Use --keep to preserve the "
-               "intermediate structure.\n";
+  std::cout << "  init      Creates a vessel.json file at the current dir and prints a link to docs\n";
+  std::cout << "  pack [--keep]  Builds and packages your project into a .vsl bundle.\n";
+  std::cout << "  import <file.AppImage>  Converts a third-party AppImage into a managed Vessel bundle.\n";
+  std::cout << "  list      Lists all installed applications with their status and descriptions.\n";
   std::cout << "  update    Updates and cleans up the global registry\n";
-  std::cout << "  remove <name> [-y] Removes an application from the global "
-               "registry\n";
-  std::cout << "  list      List all installed applications\n";
-  std::cout << "  import <file.AppImage>  Converts an AppImage into a Vessel "
-               "bundle\n";
+  std::cout << "  remove <name> [-y] Removes an application from the global registry\n";
   std::cout << "  help      Show help menu\n";
   return 0;
 }
 
-int init() {
+int init(int argc, char* argv[]) {
   if (fs::exists("vessel.json")) {
     std::cerr << "vessel.json already exists in the current directory.\n";
     return 1;
   }
 
+  std::string mode = "cpp";
+  for (int i = 0; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg.find("--mode=") == 0) {
+      mode = arg.substr(7);
+    }
+  }
+
+  std::string content;
+  if (mode == "cpp") {
+    CMakePacker packer;
+    content = packer.get_default_manifest("untitled_app");
+  } else if (mode == "gradle") {
+    GradlePacker packer;
+    content = packer.get_default_manifest("untitled_app");
+  } else {
+    std::cerr << "Unknown mode: " << mode << "\n";
+    return 1;
+  }
+
   std::ofstream manifest("vessel.json");
-  manifest << "{\n";
-  manifest << "  \"name\": \"untitled_app\",\n";
-  manifest << "  \"bin_file\": \"untitled_app\",\n";
-  manifest << "  \"version\": \"1.0.0\",\n";
-  manifest << "  \"description\": \"A native C++ application bundled with "
-              "Vessel\",\n";
-  manifest << "  \"icon\": \"res/icon.png\",\n";
-  manifest << "  \"build_dir\": \"build\",\n";
-  manifest << "  \"build_cmd\": \"cmake .. && make\",\n";
-  manifest << "  \"dist_dir\": \".\",\n";
-  manifest << "  \"includes\": [\n    \"res\"\n  ]\n";
-  manifest << "}\n";
+  manifest << content;
   manifest.close();
 
-  std::cout << "Initialized vessel.json in the current directory.\n";
-  std::cout
-      << "For full documentation and advanced manifest configuration, visit:\n";
+  std::cout << "Initialized vessel.json in the current directory for mode: " << mode << ".\n";
+  std::cout << "For full documentation and advanced manifest configuration, visit:\n";
   std::cout << "--> https://github.com/vessel-pkg/docs\n";
   return 0;
 }
 
 int pack(int argc, char *argv[]) {
-  // 1. Parse Manifest to determine Target Binary
   if (!fs::exists("vessel.json")) {
     std::cerr << "Error: vessel.json missing. Run 'vsl init' first.\n";
     return 1;
@@ -123,23 +81,13 @@ int pack(int argc, char *argv[]) {
   }
 
   std::cout << "Vessel: Parsing vessel.json...\n";
-  std::string app_name = "untitled_app";
-  std::string bin_file = "";
-  std::string icon_path = "";
-  std::string build_dir = "build";
-  std::string build_cmd = ""; // Only build if CMakeLists.txt is found
-  std::string dist_dir = ".";
-
-  if (fs::exists("CMakeLists.txt")) {
-    build_cmd = "cmake .. && make";
-  }
-
+  ManifestData manifest;
   std::ifstream manifest_file("vessel.json");
   if (manifest_file.is_open()) {
     std::string content((std::istreambuf_iterator<char>(manifest_file)),
                         std::istreambuf_iterator<char>());
 
-    auto get_manifest_value = [&](const std::string &key) {
+    auto get_val = [&](const std::string &key) {
       size_t key_pos = content.find("\"" + key + "\":");
       if (key_pos != std::string::npos) {
         size_t start_quote = content.find("\"", key_pos + key.length() + 3);
@@ -152,199 +100,79 @@ int pack(int argc, char *argv[]) {
       return std::string("");
     };
 
-    std::string v = get_manifest_value("name");
-    if (!v.empty())
-      app_name = v;
-    v = get_manifest_value("bin_file");
-    if (!v.empty())
-      bin_file = v;
-    v = get_manifest_value("icon");
-    if (!v.empty())
-      icon_path = v;
-    v = get_manifest_value("build_dir");
-    if (!v.empty())
-      build_dir = v;
-    v = get_manifest_value("build_cmd");
-    if (!v.empty())
-      build_cmd = v;
-    v = get_manifest_value("dist_dir");
-    if (!v.empty())
-      dist_dir = v;
+    std::string v;
+    if (!(v = get_val("name")).empty()) manifest.name = v;
+    if (!(v = get_val("bin_file")).empty()) manifest.bin_file = v;
+    if (!(v = get_val("icon")).empty()) manifest.icon = v;
+    if (!(v = get_val("build_dir")).empty()) manifest.build_dir = v;
+    if (!(v = get_val("build_cmd")).empty()) manifest.build_cmd = v;
+    if (!(v = get_val("dist_dir")).empty()) manifest.dist_dir = v;
+    if (!(v = get_val("mode")).empty()) manifest.mode = v;
+    if (!(v = get_val("version")).empty()) manifest.version = v;
 
-    manifest_file.close();
-  }
-
-  // 2. Automated Build Orchestration
-  if (fs::exists("CMakeLists.txt") || !build_cmd.empty()) {
-    std::cout << "Vessel: Orchestrating build in '" << build_dir << "'...\n";
-    fs::create_directories(build_dir);
-    std::string cmd = "cd " + build_dir + " && " + build_cmd;
-    if (system(cmd.c_str()) != 0) {
-      std::cerr << "Vessel Error: Build command failed.\n";
-      return 1;
+    // Runtime parsing
+    size_t runtime_pos = content.find("\"runtime\"");
+    if (runtime_pos != std::string::npos) {
+        auto parse_nested = [&](const std::string& key) {
+            size_t key_pos = content.find("\"" + key + "\"", runtime_pos);
+            if (key_pos != std::string::npos) {
+                size_t colon = content.find(":", key_pos);
+                if (colon != std::string::npos) {
+                    size_t s = content.find("\"", colon);
+                    size_t e = content.find("\"", s + 1);
+                    if (s != std::string::npos && e != std::string::npos) {
+                        return content.substr(s + 1, e - s - 1);
+                    }
+                }
+            }
+            return std::string("");
+        };
+        manifest.runtime.type = parse_nested("type");
+        manifest.runtime.version = parse_nested("version");
     }
-  }
 
-  // 3. Resolve Target Binary
-  if (bin_file.empty())
-    bin_file = app_name;
-
-  fs::path binary_path = fs::path(build_dir) / bin_file;
-  if (!fs::exists(binary_path))
-    binary_path = bin_file; // Fallback
-
-  if (!fs::exists(binary_path)) {
-    std::cerr << "Error: Target binary '" << binary_path.string()
-              << "' not found.\n";
-    return 1;
-  }
-
-  std::string bundle_name = app_name + ".vsl";
-  // Sanitize bundle name for filesystems if needed, but for now we'll keep it simple
-  std::cout << "Vesselizing '" << bin_file << "' into '" << bundle_name
-            << "'...\n";
-
-  // 4. Create the Vessel Structure in a temporary folder
-  fs::path vsl_root = bundle_name + "_struct";
-  fs::path bin_dir = vsl_root / "bin";
-  fs::path lib_dir = vsl_root / "lib";
-  fs::path res_dir = vsl_root / "res";
-
-  fs::create_directories(bin_dir);
-  fs::create_directories(lib_dir);
-  fs::create_directories(res_dir);
-
-  // 5. Copy the Icon if specified
-  if (!icon_path.empty() && fs::exists(icon_path)) {
-    fs::path target_icon = res_dir / fs::path(icon_path).filename();
-    std::cout << "Packing icon: " << icon_path << "\n";
-    fs::copy(icon_path, target_icon,
-             fs::copy_options::overwrite_existing |
-                 fs::copy_options::recursive);
-  }
-
-  // 6. Copy the Brain
-  fs::path target_bin = bin_dir / bin_file;
-  fs::copy_file(binary_path, target_bin, fs::copy_options::overwrite_existing);
-
-  // 6. Resolve logical paths for resources and manifest
-  fs::path logical_res = "res";
-  if (!fs::exists(logical_res) && fs::exists("../res"))
-    logical_res = "../res";
-
-  fs::path logical_vessel_json = "vessel.json";
-  if (!fs::exists(logical_vessel_json) && fs::exists("../vessel.json"))
-    logical_vessel_json = "../vessel.json";
-
-  // 7. Custom Includes Tracking
-  std::vector<std::string> custom_includes;
-  std::ifstream manifest_reader(logical_vessel_json);
-  if (manifest_reader.is_open()) {
-    std::cout << "Checking vessel.json for custom includes...\n";
-    std::string content((std::istreambuf_iterator<char>(manifest_reader)),
-                        std::istreambuf_iterator<char>());
     size_t inc_pos = content.find("\"includes\"");
     if (inc_pos != std::string::npos) {
       size_t start_bracket = content.find("[", inc_pos);
       size_t end_bracket = content.find("]", start_bracket);
-      if (start_bracket != std::string::npos &&
-          end_bracket != std::string::npos) {
-        std::string array_content =
-            content.substr(start_bracket + 1, end_bracket - start_bracket - 1);
+      if (start_bracket != std::string::npos && end_bracket != std::string::npos) {
+        std::string array_content = content.substr(start_bracket + 1, end_bracket - start_bracket - 1);
         size_t quote_start = array_content.find("\"");
         while (quote_start != std::string::npos) {
           size_t quote_end = array_content.find("\"", quote_start + 1);
           if (quote_end != std::string::npos) {
-            custom_includes.push_back(array_content.substr(
-                quote_start + 1, quote_end - quote_start - 1));
+            manifest.includes.push_back(array_content.substr(quote_start + 1, quote_end - quote_start - 1));
             quote_start = array_content.find("\"", quote_end + 1);
-          } else
-            break;
+          } else break;
         }
       }
     }
-    manifest_reader.close();
+    manifest_file.close();
   }
 
-  for (const auto &custom_path : custom_includes) {
-    if (fs::exists(custom_path)) {
-      if (custom_path.find(".so") != std::string::npos) {
-        std::cout << "  Packing custom library: "
-                  << fs::path(custom_path).filename() << "\n";
-        fs::copy(custom_path, lib_dir / fs::path(custom_path).filename(),
-                 fs::copy_options::recursive |
-                     fs::copy_options::overwrite_existing);
-      } else {
-        std::cout << "  Packing custom resource: "
-                  << fs::path(custom_path).filename() << "\n";
-        fs::copy(custom_path, res_dir / fs::path(custom_path).filename(),
-                 fs::copy_options::recursive |
-                     fs::copy_options::overwrite_existing);
-      }
-    } else {
-      std::cerr << "Warning: Custom include '" << custom_path
-                << "' not found.\n";
-    }
-  }
-
-  // 4. Crawl and Copy Foreign Furniture (Dependencies)
-  std::cout << "Crawling dependencies...\n";
-  auto dependencies = get_dependencies(binary_path);
-  for (const auto &lib : dependencies) {
-    fs::path lib_path(lib);
-    if (fs::exists(lib_path)) {
-      std::cout << "  Packing auto-dependency: " << lib_path.filename() << "\n";
-      fs::copy_file(lib_path, lib_dir / lib_path.filename(),
-                    fs::copy_options::overwrite_existing);
-    }
-  }
-
-  // 5. Relocation
-  std::cout << "Relocating internal library paths natively...\n";
-  std::string patchelf_base_path = fs::read_symlink("/proc/self/exe").string();
-  std::string internal_patchelf =
-      (fs::path(patchelf_base_path).parent_path() / "patchelf").string();
-
-  std::string patch_cmd = "\"" + internal_patchelf + "\" --set-rpath '$ORIGIN/../lib' \"" +
-                          target_bin.string() + "\" 2>/dev/null";
-  if (system(patch_cmd.c_str()) != 0) {
-    std::cerr << "Warning: Vendor ELF execution failed. Binary may not find "
-                 "packaged libs.\n";
-  }
-
-  // 6. Build or Copy vessel.json manifest
-  fs::path target_manifest = vsl_root / "vessel.json";
-  if (fs::exists(logical_vessel_json)) {
-    std::cout << "Copying user-provided vessel.json manifest...\n";
-    fs::copy_file(logical_vessel_json, target_manifest,
-                  fs::copy_options::overwrite_existing);
+  std::unique_ptr<Packer> packer;
+  if (manifest.mode == "cpp") {
+      packer = std::make_unique<CMakePacker>();
+  } else if (manifest.mode == "gradle") {
+      packer = std::make_unique<GradlePacker>();
   } else {
-    std::cout << "Generating fallback vessel.json manifest...\n";
-    std::ofstream manifest(target_manifest);
-    manifest << "{\n  \"name\": \"" << app_name
-             << "\",\n  \"bin_file\": \"" << bin_file
-             << "\",\n  \"version\": \"1.0.0\"\n}\n";
-    manifest.close();
+      std::cerr << "Error: Unsupported packing mode '" << manifest.mode << "'.\n";
+      return 1;
   }
 
-  // Copy standard resource folder if it exists
-  if (fs::exists(logical_res) && fs::is_directory(logical_res)) {
-    std::cout << "Packing structural resources...\n";
-    for (const auto &entry : fs::recursive_directory_iterator(logical_res)) {
-      fs::path target_path =
-          res_dir / entry.path().lexically_relative(logical_res);
-      if (entry.is_directory()) {
-        fs::create_directories(target_path);
-      } else {
-        std::cout << "  Packing resource file: "
-                  << entry.path().filename().string() << "\n";
-        fs::copy_file(entry.path(), target_path,
-                      fs::copy_options::overwrite_existing);
-      }
-    }
+  if (!packer->execute_build(manifest)) {
+      return 1;
   }
 
-  // 7. The Single-File Magic
+  std::string bundle_name = manifest.name + ".vsl";
+  fs::path vsl_root = bundle_name + "_struct";
+  fs::remove_all(vsl_root);
+  fs::create_directories(vsl_root);
+
+  if (!packer->assemble_payload(manifest, vsl_root)) {
+      return 1;
+  }
+
   std::cout << "Compressing and generating final single-file executable...\n";
   std::string archive_path = bundle_name + "_payload.tar.gz";
   std::string tar_cmd =
@@ -354,13 +182,11 @@ int pack(int argc, char *argv[]) {
     return 1;
   }
 
-  // 8. Resolve Stub Path
   std::string pack_exe_path = "/proc/self/exe";
   fs::path stub_parent = fs::read_symlink(pack_exe_path).parent_path();
   std::string stub_path = (stub_parent / "vsl-stub").string();
 
   if (!fs::exists(stub_path)) {
-    // Fallback to system install data dir
     stub_path = fs::path(VESSEL_DATA_DIR) / "vsl-stub";
   }
 
@@ -382,18 +208,17 @@ int pack(int argc, char *argv[]) {
   }
   fs::remove(archive_path);
 
-  if (dist_dir != "." && !dist_dir.empty()) {
-    fs::create_directories(dist_dir);
-    fs::rename(bundle_name, fs::path(dist_dir) / bundle_name);
+  if (manifest.dist_dir != "." && !manifest.dist_dir.empty()) {
+    fs::create_directories(manifest.dist_dir);
+    fs::rename(bundle_name, fs::path(manifest.dist_dir) / bundle_name);
     std::cout << "Vessel Single-File Bundle '" << bundle_name
-              << "' is ready in " << dist_dir << "!\n";
+              << "' is ready in " << manifest.dist_dir << "!\n";
   } else {
     std::cout << "Vessel Single-File Bundle '" << bundle_name
               << "' is ready to sail!\n";
   }
   return 0;
 }
-
 int update(int argc, char *argv[]) {
   std::cout << "Vessel Update Manager\n";
   std::cout << "==========================\n";

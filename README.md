@@ -1,15 +1,17 @@
 # 🚢 Vessel
 ### The Native Linux Application Bundler
 
-Vessel is a high-performance C++ toolchain designed to bundle native Linux applications into single-file, self-extracting executables (`.vsl`). It automates dependency crawling, library relocation, and OS integration, providing a "compile once, run anywhere" experience for the Linux desktop.
+Vessel is a high-performance Linux bundler that packages applications into single-file, self-extracting executables (`.vsl`). It supports both native C++ projects (CMake) and Java projects (Gradle), with dependency bundling, runtime setup, and desktop integration.
 
 ---
 
 ## Key Features
 
-- **Single-File Bundles**: Pack your entire app, libraries, and resources into one executable.
-- **Dependency Crawling**: Automatically detects and packs required `.so` files using `ldd`.
-- **Relocation Magic**: Patches ELF RPATHs natively to ensure libraries are found in the bundle.
+- **Dual Build Modes**: Package C++ apps (`mode: cpp`) and Java apps (`mode: gradle`).
+- **Single-File Bundles**: Pack app binaries/JARs, libraries, and resources into one executable.
+- **Dependency Crawling (C++)**: Automatically detects and packs required `.so` files using `ldd`.
+- **Runtime-Aware Launching (Java)**: Supports runtime metadata and shared Java runtime setup.
+- **Relocation**: Patches ELF RPATHs so bundled native libraries can be discovered at runtime.
 - **OS Integration**: First-run auto-installation (Desktop entries, Icons, App menu).
 - **Global Registry**: Manage and update all your Vessel apps from a central CLI.
 
@@ -24,15 +26,24 @@ cmake ..
 make
 ```
 
-### Initialize a Project
+### Initialize a C++ Project
 ```bash
-vsl init
+vsl init --mode=cpp
 ```
 
-### Pack your App
+### Initialize a Java/Gradle Project
+```bash
+vsl init --mode=gradle
+```
+
+### Pack Your App
 ```bash
 vsl pack
 ```
+
+You can also try the included sample apps in:
+- `examples/cmake`
+- `examples/gradle`
 
 ---
 
@@ -40,7 +51,7 @@ vsl pack
 
 | Command | Description |
 | :--- | :--- |
-| `init` | Creates a `vessel.json` manifest in the current directory. |
+| `init [--mode=cpp|gradle]` | Creates a `vessel.json` manifest in the current directory. |
 | `pack [--keep]` | Builds and packages your project into a `.vsl` bundle. |
 | `import <file.AppImage>` | Converts a third-party AppImage into a managed Vessel bundle. |
 | `list` | Lists all installed applications with their status and descriptions. |
@@ -54,11 +65,14 @@ vsl pack
 Customize your bundle by editing the manifest:
 ```json
 {
-  "name": "my_app",
+  "name": "my_cpp_app",
+  "mode": "cpp",
+  "bin_file": "my_cpp_app",
   "version": "1.0.0",
-  "entry": "bin/my_app",
+  "description": "A native C++ app bundled with Vessel",
   "icon": "res/icon.png",
   "build_dir": "build",
+  "build_cmd": "cmake .. && make",
   "dist_dir": "dist",
   "includes": [
     "res",
@@ -67,7 +81,33 @@ Customize your bundle by editing the manifest:
 }
 ```
 
+Gradle example:
+```json
+{
+  "name": "my_java_app",
+  "mode": "gradle",
+  "version": "1.0.0",
+  "description": "A Java app bundled with Vessel",
+  "build_cmd": "./gradlew :app:shadowJar",
+  "bin_file": "app/build/libs/app-all.jar",
+  "build_dir": ".",
+  "dist_dir": "dist",
+  "runtime": {
+    "type": "java",
+    "version": "21"
+  },
+  "includes": [
+    "assets"
+  ]
+}
+```
+
+For full usage details, see:
+- `docs/usage.md`
+- `docs/architecture.md`
+- `docs/testing.md`
+
 ---
 
 ## License
-MIT License. Built with ❤️ for the Linux community.
+MIT License.

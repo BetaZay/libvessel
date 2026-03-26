@@ -36,7 +36,7 @@ int main(int argc, char *argv[]) {
   case Command::List:
     return vessel::list();
   case Command::Init:
-    return vessel::init();
+    return vessel::init(argc - 2, argv + 2);
   case Command::Help:
   case Command::Unknown:
     return vessel::help();

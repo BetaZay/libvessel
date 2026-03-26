@@ -1,0 +1,14 @@
+{
+  "name": "JavaHello",
+  "mode": "gradle",
+  "version": "1.0.0",
+  "description": "Vessel-Bundled Java Application (Gradle)",
+  "build_cmd": "./gradlew :app:shadowJar",
+  "bin_file": "app/build/libs/app-all.jar",
+  "build_dir": ".",
+  "dist_dir": "dist",
+  "runtime": {
+    "type": "java",
+    "version": "21"
+  }
+}

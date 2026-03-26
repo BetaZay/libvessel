@@ -1,22 +1,22 @@
 # Vessel Testing Guide
 
-Vessel includes a comprehensive test suite designed to ensure the stability of native C++ bundling across multiple Linux distributions.
+Vessel includes automated and manual checks for both C++ (CMake) and Java (Gradle) packaging flows.
 
 ## 1. Local Automated Testing
 You can run the primary test suite on your host machine using:
 ```bash
-./tests/scripts/run_tests.sh
+./tests/run.sh -t=cmake
 ```
 **What it tests:**
 - Full build of the Vessel SDK.
-- Packaging of the `example/` project.
+- Packaging and execution flow for the repository example app.
 - Extraction and first-run registration of the resulting `.vsl`.
 - Registry integrity and cleanup with `vsl update` and `vsl remove`.
 
 ---
 
 ## 2. Multi-OS Orchestration (Docker)
-Vessel is tested against multiple Linux distributions to ensure broad compatibility. You can run these tests locally if you have Docker installed:
+Vessel is tested against multiple Linux distributions to validate compatibility. You can run these tests locally if Docker is installed:
 
 ### Ubuntu 20.04 (Primary Target)
 ```bash
@@ -38,22 +38,58 @@ docker run --rm vessel-test-arch
 
 ---
 
-## 3. Integration Tests in CI/CD
-Vessel uses **GitHub Actions** (`.github/workflows/ci.yml`) to automatically run the full test suite on every push to `main` and on pull requests.
+## 3. Example Project Smoke Tests
 
-**The CI Pipeline:**
-1. **NATIVE-TEST**: Runs the test suite on a standard Ubuntu runner.
-2. **DISTRO-VALIDATION**: Spawns concurrent Docker containers for Ubuntu, Fedora, and Arch to verify binary compatibility.
-3. **ARTIFACT-PACKING**: Compiles and provides the `vsl` binary as a downloadable artifact for review.
+### C++ Example (`examples/cmake`)
+```bash
+cd examples/cmake
+../../build/vsl pack
+./dist/pong.vsl --install-only
+```
+
+### Java/Gradle Example (`examples/gradle`)
+```bash
+cd examples/gradle
+../../build/vsl pack
+./dist/JavaHello.vsl --install-only
+```
 
 ---
 
-## 4. Manual Testing
+## 4. Unified Test Runner
+Use the root test runner to choose suite(s):
+
+```bash
+./tests/run.sh -t=cmake
+./tests/run.sh -t=gradle
+./tests/run.sh -t=all
+```
+
+Run inside distro Docker matrix:
+
+```bash
+./tests/run.sh --docker -t=cmake
+./tests/run.sh --docker -t=gradle
+./tests/run.sh --docker -t=all
+```
+
+---
+
+## 5. Integration Tests in CI/CD
+Vessel uses GitHub Actions (`.github/workflows/ci.yml`) on pushes and pull requests to `main`:
+
+1. Native build job.
+2. Docker-based multi-distro integration job.
+3. Draft release job for `v*` tags.
+
+---
+
+## 6. Manual Testing
 When developing new features, it is recommended to test the "Installer" lifecycle:
 1. Build Vessel: `cd build && make && sudo make install`
-2. Pack an app: `vsl pack` in `example/`
+2. Pack an app from `examples/cmake` or `examples/gradle`.
 3. Move the `.vsl` to a clean folder (e.g. `~/Downloads`).
-4. Run `./example.vsl` and verify:
+4. Run `./<app>.vsl` and verify:
    - It deletes itself after install.
    - A shortcut appears in `~/Vessel Apps`.
    - The app appears in `vsl list`.

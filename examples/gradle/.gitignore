@@ -1,0 +1,9 @@
+.gradle/
+build/
+dist/
+*.vsl
+*_struct/
+gradlew
+gradlew.bat
+gradle/
+pack.log

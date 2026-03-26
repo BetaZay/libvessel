@@ -14,7 +14,11 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(patchelf)
 
 # libvessel (Core Packing SDK)
-add_library(vessel STATIC src/libvessel.cpp)
+add_library(vessel STATIC
+    src/libvessel.cpp
+    src/packers/CMakePacker.cpp
+    src/packers/GradlePacker.cpp
+)
 target_include_directories(vessel PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Unified CLI Tool
