@@ -74,6 +74,9 @@ Customize your bundle by editing the manifest:
   "build_dir": "build",
   "build_cmd": "cmake .. && make",
   "dist_dir": "dist",
+  "launch_args": [
+    "--fullscreen"
+  ],
   "includes": [
     "res",
     "lib/custom_lib.so"
@@ -92,6 +95,9 @@ Gradle example:
   "bin_file": "app/build/libs/app-all.jar",
   "build_dir": ".",
   "dist_dir": "dist",
+  "launch_args": [
+    "--profile=prod"
+  ],
   "runtime": {
     "type": "java",
     "version": "21"

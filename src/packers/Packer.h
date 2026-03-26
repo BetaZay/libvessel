@@ -20,6 +20,7 @@ struct ManifestData {
     std::string mode = "cpp";
     std::string version = "1.0.0";
     std::string description = "A native application bundled with Vessel";
+    std::vector<std::string> launch_args;
     std::vector<std::string> includes;
     RuntimeData runtime;
 };

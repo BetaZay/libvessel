@@ -4,12 +4,92 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <sstream>
+#include <cstdio>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <signal.h>
 
 namespace fs = std::filesystem;
+
+std::string normalize_archive_entry(std::string entry) {
+  while (entry.rfind("./", 0) == 0) {
+    entry = entry.substr(2);
+  }
+  return entry;
+}
+
+bool is_safe_relative_entry(const std::string &entry) {
+  if (entry.empty()) return false;
+  if (entry[0] == '/') return false;
+  if (entry.find("..") != std::string::npos) return false;
+  return true;
+}
+
+std::string shell_quote(const std::string &s) {
+  std::string q = "'";
+  for (char c : s) {
+    if (c == '\'') {
+      q += "'\\''";
+    } else {
+      q += c;
+    }
+  }
+  q += "'";
+  return q;
+}
+
+std::string build_command(const std::string &exec_path,
+                          const std::vector<std::string> &args) {
+  std::string cmd = shell_quote(exec_path);
+  for (const auto &arg : args) {
+    cmd += " ";
+    cmd += shell_quote(arg);
+  }
+  return cmd;
+}
+
+std::vector<std::string> list_archive_entries(const fs::path &archive_path) {
+  std::vector<std::string> entries;
+  std::string cmd = "tar -tzf \"" + archive_path.string() + "\"";
+  FILE *pipe = popen(cmd.c_str(), "r");
+  if (!pipe) return entries;
+
+  char buf[4096];
+  while (fgets(buf, sizeof(buf), pipe)) {
+    std::string line(buf);
+    if (!line.empty() && line.back() == '\n') line.pop_back();
+    line = normalize_archive_entry(line);
+    if (!is_safe_relative_entry(line)) continue;
+    if (!line.empty() && line.back() == '/') continue; // only track file-like entries
+    entries.push_back(line);
+  }
+
+  pclose(pipe);
+  return entries;
+}
+
+std::vector<std::string> read_managed_index(const fs::path &index_path) {
+  std::vector<std::string> managed;
+  if (!fs::exists(index_path)) return managed;
+
+  std::ifstream in(index_path);
+  std::string line;
+  while (std::getline(in, line)) {
+    line = normalize_archive_entry(line);
+    if (is_safe_relative_entry(line)) managed.push_back(line);
+  }
+  return managed;
+}
+
+void write_managed_index(const fs::path &index_path,
+                         const std::vector<std::string> &entries) {
+  std::ofstream out(index_path, std::ios::trunc);
+  for (const auto &entry : entries) {
+    out << entry << "\n";
+  }
+}
 
 // A simple string search in a binary file
 size_t find_marker(std::ifstream &file, const std::string &marker) {
@@ -152,6 +232,7 @@ bool ensure_runtime(const std::string& type, const std::string& version, StubUX&
   fs::path runtime_root = fs::path(home) / ".vessel" / "runtimes" / "java" / version;
   if (fs::exists(runtime_root / "bin" / "java")) {
       setenv("JAVA_HOME", runtime_root.string().c_str(), 1);
+      setenv("VSL_SHARED_JAVA_HOME", runtime_root.string().c_str(), 1);
       return true;
   }
 
@@ -184,6 +265,7 @@ bool ensure_runtime(const std::string& type, const std::string& version, StubUX&
 
   fs::remove(tarball);
   setenv("JAVA_HOME", runtime_root.string().c_str(), 1);
+  setenv("VSL_SHARED_JAVA_HOME", runtime_root.string().c_str(), 1);
   ux.show_status("Runtime ready.");
   return true;
 }
@@ -214,16 +296,22 @@ int main(int argc, char *argv[]) {
   StubUX ux(app_name);
 
   bool install_only = false;
+  bool extract_only = false;
+  std::vector<std::string> passthrough_args;
   for (int i = 1; i < argc; i++) {
-    if (std::string(argv[i]) == "--install-only") {
+    std::string arg = argv[i];
+    if (arg == "--install-only") {
       install_only = true;
-      break;
+    } else if (arg == "--vsl-extract") {
+      extract_only = true;
+    } else {
+      passthrough_args.push_back(arg);
     }
   }
 
   // 0. The Inspection Flag: Dump the internal filesystem for the user
   // dynamically
-  if (argc >= 2 && std::string(argv[1]) == "--vsl-extract") {
+  if (extract_only) {
     std::cout
         << "Vessel Debug: Extracting internal file system for inspection...\n";
     fs::path dump_dir = fs::path("./" + app_name + "_vsl_unpacked");
@@ -246,8 +334,15 @@ int main(int argc, char *argv[]) {
   }
 
   // 1. Determine cache extraction directory
-  fs::path cache_dir = fs::path("/tmp/vessel_cache_" + app_name);
+  const char *home = getenv("HOME");
+  fs::path cache_dir;
+  if (home && *home) {
+    cache_dir = fs::path(home) / ".vessel" / "cache" / app_name;
+  } else {
+    cache_dir = fs::path("/tmp/vessel_cache_" + app_name);
+  }
   fs::path extract_marker = cache_dir / ".vsl_extracted";
+  fs::path managed_index = cache_dir / ".vsl_managed_files";
 
   bool needs_extraction = true;
   if (fs::exists(cache_dir) && fs::exists(extract_marker)) {
@@ -261,9 +356,6 @@ int main(int argc, char *argv[]) {
   }
 
   if (needs_extraction) {
-    if (fs::exists(cache_dir)) {
-      fs::remove_all(cache_dir);
-    }
     fs::create_directories(cache_dir);
 
     // 2. Write the archive to a temp file
@@ -274,6 +366,19 @@ int main(int argc, char *argv[]) {
     tar_out << self_file.rdbuf();
     tar_out.close();
     self_file.close();
+
+    // 2.5 Compute package file list and clean prior managed files only.
+    const auto new_entries = list_archive_entries(temp_tar);
+    const auto previous_entries = read_managed_index(managed_index);
+    for (const auto &entry : previous_entries) {
+      fs::path target = cache_dir / entry;
+      if (!fs::exists(target)) continue;
+      if (fs::is_directory(target)) {
+        fs::remove_all(target);
+      } else {
+        fs::remove(target);
+      }
+    }
 
     // 3. Extract tar.gz into the cache directory
     std::string extract_cmd =
@@ -287,6 +392,7 @@ int main(int argc, char *argv[]) {
     std::ofstream marker(extract_marker);
     marker.close();
     fs::last_write_time(extract_marker, fs::last_write_time(actual_vsl_path));
+    write_managed_index(managed_index, new_entries);
 
     fs::remove(temp_tar);
   } else {
@@ -297,6 +403,7 @@ int main(int argc, char *argv[]) {
   std::string app_fancy_name = app_name;
   std::string bin_file_name = app_name;
   std::string icon_filename = "";
+  std::vector<std::string> launch_args;
 
   fs::path manifest_path = cache_dir / "vessel.json";
   if (fs::exists(manifest_path)) {
@@ -327,6 +434,27 @@ int main(int argc, char *argv[]) {
     std::string icon_val = get_val("icon");
     if (!icon_val.empty())
       icon_filename = fs::path(icon_val).filename().string();
+
+    size_t launch_args_pos = content.find("\"launch_args\"");
+    if (launch_args_pos != std::string::npos) {
+      size_t start_bracket = content.find("[", launch_args_pos);
+      size_t end_bracket = content.find("]", start_bracket);
+      if (start_bracket != std::string::npos && end_bracket != std::string::npos) {
+        std::string array_content =
+            content.substr(start_bracket + 1, end_bracket - start_bracket - 1);
+        size_t quote_start = array_content.find("\"");
+        while (quote_start != std::string::npos) {
+          size_t quote_end = array_content.find("\"", quote_start + 1);
+          if (quote_end != std::string::npos) {
+            launch_args.push_back(
+                array_content.substr(quote_start + 1, quote_end - quote_start - 1));
+            quote_start = array_content.find("\"", quote_end + 1);
+          } else {
+            break;
+          }
+        }
+      }
+    }
 
     // Runtime requirement check
     size_t runtime_pos = content.find("\"runtime\"");
@@ -439,7 +567,8 @@ int main(int argc, char *argv[]) {
       } else {
         std::cout << "Installation complete! Executing primary bundle...\n";
         ux.hide_status(); // Close progress dialog before blocking on inner bundle
-        std::string launch_cmd = final_vsl_location.string();
+        std::string launch_cmd =
+            build_command(final_vsl_location.string(), passthrough_args);
         return system(launch_cmd.c_str());
       }
     } else {
@@ -520,6 +649,15 @@ int main(int argc, char *argv[]) {
   }
 
   ux.hide_status();
-  int ret = system(exec_str.c_str());
+  std::vector<std::string> effective_args = passthrough_args;
+  // launch_args are encoded into VesselRun by packers; only apply them here
+  // when there is no VesselRun wrapper.
+  if (exec_path.filename() != "VesselRun") {
+    effective_args.insert(effective_args.begin(),
+                          launch_args.begin(),
+                          launch_args.end());
+  }
+  std::string launch_cmd = build_command(exec_str, effective_args);
+  int ret = system(launch_cmd.c_str());
   return ret;
 }

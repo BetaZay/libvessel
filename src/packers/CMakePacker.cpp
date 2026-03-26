@@ -10,6 +10,20 @@ namespace fs = std::filesystem;
 
 namespace vessel {
 
+namespace {
+std::string escape_for_double_quotes(const std::string &s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    if (c == '\\' || c == '"' || c == '`') {
+      out.push_back('\\');
+    }
+    out.push_back(c);
+  }
+  return out;
+}
+} // namespace
+
 std::string CMakePacker::exec(const char *cmd) {
   std::array<char, 128> buffer;
   std::string result;
@@ -59,6 +73,7 @@ std::string CMakePacker::get_default_manifest(const std::string& app_name) {
     content += "  \"build_dir\": \"build\",\n";
     content += "  \"build_cmd\": \"cmake .. && make\",\n";
     content += "  \"dist_dir\": \".\",\n";
+    content += "  \"launch_args\": [],\n";
     content += "  \"includes\": [\n    \"res\"\n  ]\n}\n";
     return content;
 }
@@ -146,7 +161,11 @@ bool CMakePacker::assemble_payload(const ManifestData& manifest, const fs::path&
     vessel_run << "#!/bin/bash\n";
     vessel_run << "DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n";
     vessel_run << "export LD_LIBRARY_PATH=\"$DIR/../lib:$LD_LIBRARY_PATH\"\n";
-    vessel_run << "exec \"$DIR/" << bin_file_name << "\" \"$@\"\n";
+    vessel_run << "exec \"$DIR/" << bin_file_name << "\"";
+    for (const auto &arg : manifest.launch_args) {
+        vessel_run << " \"" << escape_for_double_quotes(arg) << "\"";
+    }
+    vessel_run << " \"$@\"\n";
     vessel_run.close();
 
     system(("chmod +x \"" + vessel_run_path.string() + "\"").c_str());

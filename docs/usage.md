@@ -126,6 +126,7 @@ The `vessel.json` file allows for extensive customization:
 - `build_dir`: (string) Build directory (default `build`; common Gradle value is `.`).
 - `build_cmd`: (string) The custom command used to build your project (defaults to `cmake .. && make`).
 - `dist_dir`: (string) The output directory for the final `.vsl` bundle (defaults to `.`).
+- `launch_args`: (array of strings) Arguments automatically appended when launching your bundled app/JAR.
 - `includes`: (array of strings) A list of paths (directories or files) to include in bundle.
 - `runtime`: (object, optional) Runtime metadata. Commonly used for Java:
   - `type`: `java`
@@ -143,6 +144,9 @@ The `vessel.json` file allows for extensive customization:
   "build_dir": "custom_build",
   "build_cmd": "make -j8",
   "dist_dir": "bin",
+  "launch_args": [
+    "--difficulty=hard"
+  ],
   "includes": [
     "assets/audio",
     "assets/textures"
@@ -161,6 +165,9 @@ The `vessel.json` file allows for extensive customization:
   "bin_file": "app/build/libs/app-all.jar",
   "build_dir": ".",
   "dist_dir": "dist",
+  "launch_args": [
+    "--spring.profiles.active=prod"
+  ],
   "runtime": {
     "type": "java",
     "version": "21"

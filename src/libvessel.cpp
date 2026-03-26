@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,145 @@ namespace fs = std::filesystem;
 #endif
 
 namespace vessel {
+
+namespace {
+
+struct GradleInitHints {
+  bool detected = false;
+  std::string java_version = "17";
+  std::string build_cmd = "./gradlew build";
+  std::string bin_file = "build/libs/app.jar";
+};
+
+std::string read_text_file(const fs::path &path) {
+  if (!fs::exists(path)) return "";
+  std::ifstream in(path);
+  if (!in.is_open()) return "";
+  return std::string((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+}
+
+std::string normalize_java_version(const std::string &raw) {
+  if (raw.empty()) return "";
+
+  if (raw.rfind("1.", 0) == 0) {
+    size_t i = 2;
+    std::string major;
+    while (i < raw.size() && std::isdigit(static_cast<unsigned char>(raw[i]))) {
+      major.push_back(raw[i]);
+      ++i;
+    }
+    return major;
+  }
+
+  std::string major;
+  for (char c : raw) {
+    if (std::isdigit(static_cast<unsigned char>(c))) {
+      major.push_back(c);
+    } else {
+      break;
+    }
+  }
+  return major;
+}
+
+std::string detect_java_version_from_content(const std::string &content) {
+  if (content.empty()) return "";
+
+  const std::vector<std::regex> patterns = {
+      std::regex(R"(JavaLanguageVersion\s*\.of\((\d+)\))"),
+      std::regex(R"(JavaVersion\.VERSION_(\d+))"),
+      std::regex(R"((?:source|target)Compatibility\s*=\s*["']([0-9][0-9.]*)["'])")};
+
+  for (const auto &pattern : patterns) {
+    std::smatch m;
+    if (std::regex_search(content, m, pattern) && m.size() > 1) {
+      std::string normalized = normalize_java_version(m[1].str());
+      if (!normalized.empty()) return normalized;
+    }
+  }
+
+  return "";
+}
+
+bool has_shadow_plugin(const std::string &content) {
+  return content.find("com.github.johnrengelman.shadow") != std::string::npos ||
+         content.find("com.gradleup.shadow") != std::string::npos ||
+         content.find("shadowJar") != std::string::npos;
+}
+
+GradleInitHints detect_gradle_hints(const fs::path &root) {
+  GradleInitHints hints;
+
+  const fs::path root_build_gradle = root / "build.gradle";
+  const fs::path root_build_gradle_kts = root / "build.gradle.kts";
+  const fs::path app_build_gradle = root / "app" / "build.gradle";
+  const fs::path app_build_gradle_kts = root / "app" / "build.gradle.kts";
+
+  const bool has_gradle_markers =
+      fs::exists(root / "gradlew") || fs::exists(root / "gradlew.bat") ||
+      fs::exists(root / "settings.gradle") ||
+      fs::exists(root / "settings.gradle.kts") || fs::exists(root_build_gradle) ||
+      fs::exists(root_build_gradle_kts) || fs::exists(app_build_gradle) ||
+      fs::exists(app_build_gradle_kts);
+
+  if (!has_gradle_markers) return hints;
+
+  hints.detected = true;
+
+  const std::vector<fs::path> java_version_sources = {
+      app_build_gradle, app_build_gradle_kts, root_build_gradle,
+      root_build_gradle_kts};
+  for (const auto &source : java_version_sources) {
+    const std::string content = read_text_file(source);
+    const std::string detected = detect_java_version_from_content(content);
+    if (!detected.empty()) {
+      hints.java_version = detected;
+      break;
+    }
+  }
+
+  const std::string root_build_content =
+      read_text_file(root_build_gradle) + "\n" + read_text_file(root_build_gradle_kts);
+  const std::string app_build_content =
+      read_text_file(app_build_gradle) + "\n" + read_text_file(app_build_gradle_kts);
+
+  const bool has_app_module =
+      fs::exists(app_build_gradle) || fs::exists(app_build_gradle_kts);
+  const bool app_uses_shadow = has_shadow_plugin(app_build_content);
+  const bool root_uses_shadow = has_shadow_plugin(root_build_content);
+
+  if (has_app_module && app_uses_shadow) {
+    hints.build_cmd = "./gradlew :app:shadowJar";
+    hints.bin_file = "app/build/libs/app-all.jar";
+  } else if (root_uses_shadow) {
+    hints.build_cmd = "./gradlew shadowJar";
+    hints.bin_file = "build/libs/app-all.jar";
+  } else if (has_app_module) {
+    hints.build_cmd = "./gradlew :app:build";
+    hints.bin_file = "app/build/libs/app.jar";
+  }
+
+  return hints;
+}
+
+std::string build_gradle_init_manifest(const std::string &app_name,
+                                       const GradleInitHints &hints) {
+  std::string content = "{\n  \"name\": \"" + app_name + "\",\n";
+  content += "  \"mode\": \"gradle\",\n";
+  content += "  \"version\": \"1.0.0\",\n";
+  content += "  \"description\": \"A Java application bundled with Vessel\",\n";
+  content += "  \"build_cmd\": \"" + hints.build_cmd + "\",\n";
+  content += "  \"bin_file\": \"" + hints.bin_file + "\",\n";
+  content += "  \"launch_args\": [],\n";
+  content += "  \"runtime\": {\n";
+  content += "    \"type\": \"java\",\n";
+  content += "    \"version\": \"" + hints.java_version + "\"\n";
+  content += "  }\n}\n";
+  return content;
+}
+
+} // namespace
 
 int help() {
   std::cout << "Vessel CLI - The Native Linux Application Bundler\n\n";
@@ -38,11 +178,19 @@ int init(int argc, char* argv[]) {
   }
 
   std::string mode = "cpp";
+  bool mode_explicit = false;
   for (int i = 0; i < argc; ++i) {
     std::string arg = argv[i];
     if (arg.find("--mode=") == 0) {
       mode = arg.substr(7);
+      mode_explicit = true;
     }
+  }
+
+  GradleInitHints gradle_hints = detect_gradle_hints(fs::current_path());
+  if (!mode_explicit && gradle_hints.detected) {
+    mode = "gradle";
+    std::cout << "Vessel: Detected Gradle project. Auto-selecting mode 'gradle'.\n";
   }
 
   std::string content;
@@ -50,8 +198,11 @@ int init(int argc, char* argv[]) {
     CMakePacker packer;
     content = packer.get_default_manifest("untitled_app");
   } else if (mode == "gradle") {
-    GradlePacker packer;
-    content = packer.get_default_manifest("untitled_app");
+    content = build_gradle_init_manifest("untitled_app", gradle_hints);
+    if (gradle_hints.detected) {
+      std::cout << "Vessel: Detected Java runtime version "
+                << gradle_hints.java_version << " from Gradle configuration.\n";
+    }
   } else {
     std::cerr << "Unknown mode: " << mode << "\n";
     return 1;
@@ -144,6 +295,27 @@ int pack(int argc, char *argv[]) {
             manifest.includes.push_back(array_content.substr(quote_start + 1, quote_end - quote_start - 1));
             quote_start = array_content.find("\"", quote_end + 1);
           } else break;
+        }
+      }
+    }
+
+    size_t launch_args_pos = content.find("\"launch_args\"");
+    if (launch_args_pos != std::string::npos) {
+      size_t start_bracket = content.find("[", launch_args_pos);
+      size_t end_bracket = content.find("]", start_bracket);
+      if (start_bracket != std::string::npos && end_bracket != std::string::npos) {
+        std::string array_content =
+            content.substr(start_bracket + 1, end_bracket - start_bracket - 1);
+        size_t quote_start = array_content.find("\"");
+        while (quote_start != std::string::npos) {
+          size_t quote_end = array_content.find("\"", quote_start + 1);
+          if (quote_end != std::string::npos) {
+            manifest.launch_args.push_back(
+                array_content.substr(quote_start + 1, quote_end - quote_start - 1));
+            quote_start = array_content.find("\"", quote_end + 1);
+          } else {
+            break;
+          }
         }
       }
     }

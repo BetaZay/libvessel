@@ -9,6 +9,20 @@
 namespace fs = std::filesystem;
 
 namespace vessel {
+
+namespace {
+std::string escape_for_double_quotes(const std::string &s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    if (c == '\\' || c == '"' || c == '`') {
+      out.push_back('\\');
+    }
+    out.push_back(c);
+  }
+  return out;
+}
+} // namespace
  
  std::string GradlePacker::exec(const char *cmd) {
   std::array<char, 128> buffer;
@@ -30,6 +44,7 @@ std::string GradlePacker::get_default_manifest(const std::string& app_name) {
     content += "  \"description\": \"A Java application bundled with Vessel\",\n";
     content += "  \"build_cmd\": \"./gradlew build\",\n";
     content += "  \"bin_file\": \"build/libs/app.jar\",\n";
+    content += "  \"launch_args\": [],\n";
     content += "  \"runtime\": {\n";
     content += "    \"type\": \"java\",\n";
     content += "    \"version\": \"17\"\n";
@@ -67,6 +82,13 @@ bool GradlePacker::assemble_payload(const ManifestData& manifest, const fs::path
     fs::create_directories(bin_dir);
     fs::create_directories(res_dir);
 
+    // Copy icon, if provided in vessel.json.
+    if (!manifest.icon.empty() && fs::exists(manifest.icon)) {
+        fs::path target_icon = res_dir / fs::path(manifest.icon).filename();
+        std::cout << "Packing icon: " << manifest.icon << "\n";
+        fs::copy(manifest.icon, target_icon, fs::copy_options::overwrite_existing | fs::copy_options::recursive);
+    }
+
     // Copy JAR file
     std::string jar_file_name = manifest.bin_file;
     if (jar_file_name.empty()) {
@@ -100,17 +122,20 @@ bool GradlePacker::assemble_payload(const ManifestData& manifest, const fs::path
     std::ofstream vessel_run(vessel_run_path);
     vessel_run << "#!/bin/bash\n";
     vessel_run << "DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n";
-    vessel_run << "if [ -z \"$JAVA_HOME\" ]; then\n";
-    vessel_run << "  if [ -d \"$DIR/../runtime\" ]; then\n";
-    vessel_run << "    export JAVA_HOME=\"$DIR/../runtime\"\n";
-    vessel_run << "  fi\n";
-    vessel_run << "fi\n";
-    vessel_run << "if [ -n \"$JAVA_HOME\" ]; then\n";
+    vessel_run << "if [ -n \"$VSL_SHARED_JAVA_HOME\" ] && [ -x \"$VSL_SHARED_JAVA_HOME/bin/java\" ]; then\n";
+    vessel_run << "  EXEC_JAVA=\"$VSL_SHARED_JAVA_HOME/bin/java\"\n";
+    vessel_run << "elif [ -n \"$JAVA_HOME\" ] && [ -x \"$JAVA_HOME/bin/java\" ]; then\n";
     vessel_run << "  EXEC_JAVA=\"$JAVA_HOME/bin/java\"\n";
+    vessel_run << "elif [ -d \"$DIR/../runtime\" ] && [ -x \"$DIR/../runtime/bin/java\" ]; then\n";
+    vessel_run << "  EXEC_JAVA=\"$DIR/../runtime/bin/java\"\n";
     vessel_run << "else\n";
     vessel_run << "  EXEC_JAVA=\"java\"\n";
     vessel_run << "fi\n";
-    vessel_run << "exec \"$EXEC_JAVA\" -jar \"$DIR/" << target_jar.filename().string() << "\" \"$@\"\n";
+    vessel_run << "exec \"$EXEC_JAVA\" -jar \"$DIR/" << target_jar.filename().string() << "\"";
+    for (const auto &arg : manifest.launch_args) {
+        vessel_run << " \"" << escape_for_double_quotes(arg) << "\"";
+    }
+    vessel_run << " \"$@\"\n";
     vessel_run.close();
 
     system(("chmod +x \"" + vessel_run_path.string() + "\"").c_str());
