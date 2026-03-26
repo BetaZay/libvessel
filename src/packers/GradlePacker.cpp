@@ -39,12 +39,21 @@ std::string GradlePacker::get_default_manifest(const std::string& app_name) {
 
 bool GradlePacker::execute_build(const ManifestData& manifest) {
     std::cout << "Vessel: Orchestrating Gradle build...\n";
+    std::string build_dir = manifest.build_dir.empty() ? "." : manifest.build_dir;
     std::string cmd = manifest.build_cmd;
     if (cmd.empty()) {
         cmd = "./gradlew build";
     }
-    
-    if (system(cmd.c_str()) != 0) {
+
+    // Keep behavior consistent with CMake mode: execute inside build_dir.
+    // Also ensure wrapper is executable when the command uses ./gradlew.
+    std::string full_cmd = "cd \"" + build_dir + "\" && ";
+    if (cmd.find("./gradlew") != std::string::npos) {
+        full_cmd += "chmod +x ./gradlew && ";
+    }
+    full_cmd += cmd;
+
+    if (system(full_cmd.c_str()) != 0) {
         std::cerr << "Vessel Error: Gradle build failed.\n";
         return false;
     }
